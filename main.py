@@ -23,7 +23,6 @@ plt.switch_backend('agg')
 
 torch.backends.cudnn.benchmark = True
 
-
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -115,6 +114,8 @@ def get_args():
         assert args.linear_input != 'features_z', 'We need context from previous frames'
 
     if args.local_rank == -1:
+        # device (torch.device or int) – selected device. 
+        # This function is a no-op if this argument is negative.
         args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         args.n_gpu = args.step_n_gpus = torch.cuda.device_count()
     else:
@@ -132,11 +133,31 @@ def get_args():
 
     return args
 
+def set_path(args):
+    
+    if args.resume:
+        exp_path = os.path.dirname(os.path.dirname(args.resume))
+    else:
+        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+        exp_path = os.path.join(args.path_logs, f"log_{args.prefix}/{current_time}")
+    
+    img_path = os.path.join(exp_path, 'img')
+    model_path = os.path.join(exp_path, 'model')
+    
+    # Create directories for img and model if needed
+    if args.local_rank <= 0 and not args.debug and not args.test:
+        if not os.path.exists(img_path):
+            os.makedirs(img_path)
+        if not os.path.exists(model_path):
+            os.makedirs(model_path)
+
+    return img_path, model_path
+
 
 def main():
     args = get_args()
 
-    # Fix randomness
+    # Get seed for torch initialization
     seed = args.seed
     torch.cuda.manual_seed_all(seed)
     torch.manual_seed(seed)
@@ -144,6 +165,7 @@ def main():
     random.seed(seed)
 
     # ---------------------------- Prepare model ----------------------------- #
+    # Local rank for distributed training on gpus, -1 by default
     if args.local_rank <= 0:
         print_r(args, 'Preparing model')
 
@@ -175,7 +197,9 @@ def main():
         else:
             print_r(args, f"[Warning] no checkpoint found at '{args.resume}'", print_no_verbose=True)
 
-    elif args.pretrain:  # resume overwrites this
+    # --- pretraining --- #
+    # Will be overwritten by resume
+    elif args.pretrain:
         if os.path.isfile(args.pretrain):
             print_r(args, f"=> loading pretrained checkpoint '{args.pretrain}'")
             checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
@@ -194,6 +218,7 @@ def main():
             print_r(args, (name, param.requires_grad))
         print_r(args, '\n==== start dataloading ====\n')
 
+    # ---------------------------- DistributedDataParallel ----------------------------- #
     if args.local_rank != -1:
         from torch.nn.parallel import DistributedDataParallel as DDP
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if not args.not_track_running_stats else model
@@ -214,39 +239,29 @@ def main():
                                      path_data_info=args.path_data_info)
                for split in splits}
 
-    # setup tools
+    # ---------------------------- Set up log tool ----------------------------- #
+
+    # set up log path
     img_path, model_path = set_path(args)
+    
+    # set up SummaryWriter
     writer_val = SummaryWriter(
         log_dir=os.path.join(img_path, 'val') if not args.debug else '/tmp') if args.local_rank <= 0 else None
     writer_train = SummaryWriter(
         log_dir=os.path.join(img_path, 'train') if not args.debug else '/tmp') if args.local_rank <= 0 else None
-
+    
     # ---------------------------- Prepare trainer and run ----------------------------- #
+    
+    # TORCH.CUDA.SET_DEVICE(args.local_rank)
+    # selected device. This function is a no-op if this argument is negative.
     if args.local_rank <= 0:
         print_r(args, 'Preparing trainer')
     trainer = Trainer(args, model, optimizer, loaders, iteration, best_acc, writer_train, writer_val, img_path,
                       model_path, scheduler)
-
     if args.test:
         trainer.test()
     else:
         trainer.train()
-
-
-def set_path(args):
-    if args.resume:
-        exp_path = os.path.dirname(os.path.dirname(args.resume))
-    else:
-        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-        exp_path = os.path.join(args.path_logs, f"log_{args.prefix}/{current_time}")
-    img_path = os.path.join(exp_path, 'img')
-    model_path = os.path.join(exp_path, 'model')
-    if args.local_rank <= 0 and not args.debug and not args.test:
-        if not os.path.exists(img_path):
-            os.makedirs(img_path)
-        if not os.path.exists(model_path):
-            os.makedirs(model_path)
-    return img_path, model_path
 
 
 if __name__ == '__main__':

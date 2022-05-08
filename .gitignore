@@ -2,3 +2,11 @@ __pycache__/
 dataset/
 venv/
 .idea/
+dataset_info/
+videos/
+Hollywood2/
+checkpoints/
+Hollywood2-actions.tar.gz
+dataset_info.tar.gz
+checkpoints.tar.gz
+logs/

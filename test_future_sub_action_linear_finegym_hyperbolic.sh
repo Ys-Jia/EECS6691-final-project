@@ -21,7 +21,7 @@ CUDA_VISIBLE_DEVICES=0 PYTORCH_JIT=0 NCCL_LL_THRESHOLD=0 python \
   --prefix test_future_subaction_linear_finegym_hyperbolic \
   --fp16 \
   --fp64_hyper \
-  --pretrain checkpoint.pth.tar \
+  --pretrain checkpoints.tar.gz \
   --linear_input predictions_z_hat \
   --n_classes 307 \
   --hierarchical_labels \
