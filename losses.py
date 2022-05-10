@@ -7,6 +7,9 @@ from utils.poincare_distance import poincare_distance
 
 
 def compute_loss(args, feature_dist, pred, labels, target, sizes_pred, sizes_mask, B):
+    # print('pred shape:', pred.shape)
+    # print('features shape:', feature_dist.shape)
+    # print('target shape', target.shape) # target all True and False
     if args.use_labels:
         results, loss = compute_supervised_loss(args, pred, labels, B)
     else:
@@ -38,14 +41,17 @@ def compute_supervised_loss(args, pred, labels, B):  # , top_down=False, separat
         hier_accuracies = -1
         if labels.shape[0] < pred.shape[0]:
             if len(labels.shape) == 1:  # Option 2
+                print('Current options 2: option2!!')
                 assert pred.shape[0] % labels.shape[0] == 0, \
                     'Maybe you are only using some predictions for some time steps and not all of them? In that ' \
                     'case, select the appropriate labels (either in this function, or in the dataloader). In that ' \
                     'case, you should not enter in this "if", and go directly to the "else"'
                 gt = labels.repeat_interleave(args.num_seq).to(args.device)
             else:  # We also have temporal information in the labels (subaction labels). Option 5
+                print('Current options 5: option5!!!')
                 gt = labels.view(-1).to(args.device)
         else:  # Option 1
+            print('Current options 1: option1!!!')
             gt = labels.to(args.device)
         loss = torch.nn.functional.cross_entropy(pred, gt, ignore_index=-1)
 
@@ -55,24 +61,35 @@ def compute_supervised_loss(args, pred, labels, B):  # , top_down=False, separat
         # train with multiple positive labels
         if labels.shape[0] < pred.shape[0]:
             if len(labels.shape) == 2:  # Option 4
+                print('Current options 4: option4!!!')
                 assert pred.shape[0] % labels.shape[0] == 0
                 labels = labels.repeat_interleave(args.num_seq, dim=0).to(args.device)
             else:  # labels should have 3 dimensions (batch, temporal, hierarchy). Option 6
                 labels = labels.view(-1, labels.shape[-1]).to(args.device)
+                print('Current options 6: option6!!!')
         else:  # Options 2
             labels = labels.to(args.device)
-
-        pred = pred[labels[:, 0] != -1]
-        labels = labels[labels[:, 0] != -1]
+            print('Current options 2: option2!!!')
+        
+        # print('pred shape before: ',list(pred.shape))
+        # print('labels shape before: ',list(labels.shape))
+        # pred = pred[labels[:, 0] != -1]
+        # labels = labels[labels[:, 0] != -1]
+        # print('pred shape after: ',list(pred.shape))
+        # print('labels shape after: ',list(labels.shape))
 
         gt = torch.zeros(list(labels.shape[:-1]) + [pred.size(1)]).to(args.device)  # multi-label ground truth tensor
         indices = torch.tensor(np.indices(labels.shape[:-1])).view(-1, 1).expand_as(labels)
         gt[indices, labels] = 1
 
         loss = (- gt * torch.nn.functional.log_softmax(pred, -1)).sum() / gt.sum()  # CE loss with logit as ground truth
+        # specific classification accuracy (most difficult)
         accuracies = (torch.argmax(pred[:, :sh[args.dataset][1][0]], dim=1) == labels[:, 0]).float()
+        print('Predic Label:', torch.argmax(pred[:, :sh[args.dataset][1][0]], dim=1).tolist()) 
+        print('Ground Truth:', labels[:, 0].tolist())
 
-        hier_accuracies = []
+        ### Compute top-down / bottom-up accuracy
+        hier_accuracies = [] 
         for top_down in [True, False]:
             for separate_levels in [True, False]:
                 hier_accuracy = 0
@@ -103,15 +120,23 @@ def compute_supervised_loss(args, pred, labels, B):  # , top_down=False, separat
 
 def compute_selfsupervised_loss(args, pred, feature_dist, target, sizes_pred, sizes_mask, B):
     score = compute_scores(args, pred, feature_dist, sizes_pred, B)
+    print('score dim:', score.shape)
+    ### What we do here: λ and μ; two regularized item
+    reg_pred = 1e-6; reg_feature_dist = 0.5e-6
 
     _, B2, NS, NP, SQ = sizes_mask
     # score is a 6d tensor: [B, P, SQ, B2, N, SQ]
     # similarity matrix is computed inside each gpu, thus here B == num_gpu * B2
     score_flattened = score.view(B * NP * SQ, B2 * NS * SQ)
-    target_flattened = target.view(B * NP * SQ, B2 * NS * SQ)
+    target_flattened = target.contiguous().view(B * NP * SQ, B2 * NS * SQ)
     target_flattened = target_flattened.float().argmax(dim=1)
 
     loss = torch.nn.functional.cross_entropy(score_flattened, target_flattened)
+    ### regularized pred and feature_dist to be enough large; hierachical; 
+    ### prefer to use distance function, but we here directly use norm function for convenience
+    loss += reg_pred * 1 / torch.norm(pred) + reg_feature_dist * 1 / torch.norm(feature_dist)
+    ### --------------------------------------------------------------###
+    
     top1, top3, top5 = utils.calc_topk_accuracy(score_flattened, target_flattened, (1, 3, 5))
 
     results = top1, top3, top5, loss.item(), B
@@ -194,3 +219,4 @@ def bookkeeping(args, avg_meters, results):
         avg_meters['top5'].update(top5, B)
         avg_meters['losses'].update(loss, B)
         avg_meters['accuracy'].update(top1, B)
+        print('\ntop scores: ',top1,top3,top5,loss,'\n')

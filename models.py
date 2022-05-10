@@ -1,6 +1,8 @@
 import math
 import time
 
+from jinja2 import PrefixLoader
+
 import geoopt.manifolds.stereographic.math as gmath
 import torch
 import torch.nn as nn
@@ -22,7 +24,10 @@ def _initialize_weights(module, gain=1.):
 
 
 class Model(nn.Module):
-    '''DPC with RNN'''
+    '''
+    Dense Predictive Coding(DPC) with RNN
+    Details can be found at https://github.com/TengdaHan/DPC
+    '''
 
     def __init__(self, args):
 
@@ -35,6 +40,7 @@ class Model(nn.Module):
 
         self.target = self.sizes_mask = None  # Only used if cross_gpu_score is True. Otherwise they are in trainer
 
+        # args.network_feature = 'resnet18' by default
         self.backbone, self.param = select_resnet(args.network_feature,
                                                   track_running_stats=not args.not_track_running_stats)
 
@@ -45,7 +51,7 @@ class Model(nn.Module):
         self.num_layers = 1  # param for GRU
 
         """
-        When using a ConvGRU with a 1x1 convolution, it is equivalent to using a regular GRU by flattening the H and W 
+        When using a Convolutional Gated Recurrent Unit (ConvGRU) with a 1x1 convolution, it is equivalent to using a regular GRU by flattening the H and W 
         dimensions and adding those as extra samples in the batch (B' = BxHxW), and then going back to the original 
         shape. So we can use the hyperbolic GRU.
         """
@@ -94,14 +100,15 @@ class Model(nn.Module):
         # block: [B, N, C, SL, W, H]
         (B, N, C, SL, H, W) = block.shape
 
-        # ----------- STEP 1: compute features ------- #
-        # features_dist are the features used to compute the distance
-        # features_g are the features used to input to the prediction network
+        ############### First: compute ground truth features z ################
+        # features_dist: the features used to compute the distance
+        # features_g: the features used to input to the prediction network
 
         block = block.view(B * N, C, SL, H, W)
         feature = self.backbone(block)
         feature = self.adapt_dim(feature.permute(0, 2, 3, 4, 1)).permute(0, 4, 1, 2, 3)
         del block
+        # use 3d pool to reduce feature nums
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
         if self.args.no_spatial:
             feature = feature.mean(dim=[-1, -2], keepdims=True)
@@ -113,7 +120,8 @@ class Model(nn.Module):
             if self.args.final_2dim:
                 mid_feature_shape = mid_feature_shape[:-1] + (2,)
             feature_reshape = feature_reshape.reshape(-1, feature.shape[1])
-            feature_dist = self.hyperbolic_linear(feature_reshape)  # performs exmap0
+            # compute ground truth features exp0 
+            feature_dist = self.hyperbolic_linear(feature_reshape)  
             feature_dist = feature_dist.reshape(mid_feature_shape).permute(0, 4, 1, 2, 3)
 
             if self.args.hyperbolic_version == 1:
@@ -136,7 +144,7 @@ class Model(nn.Module):
         feature_dist = feature_dist.permute(0, 1, 3, 4, 2).reshape(B * self.args.pred_step * self.last_size ** 2,
                                                                    2 if self.args.final_2dim else self.feature_dim)
 
-        # ----------- STEP 2: compute predictions ------- #
+        ################ Secondly: compute predictions z_hat #################
 
         feature = self.relu(feature_g)  # [0, +inf)
         # [B,N,D,6,6], [0, +inf)
@@ -164,7 +172,7 @@ class Model(nn.Module):
                 input_linear = input_linear[:, -1]
             else:
                 input_linear = input_linear.view(-1, hidden_all.shape[2])  # prepare for linear layer
-            # Predict label supervisedly
+            # Predict label supervisedly, lowest hierachy label; in finegym is 1 of 288 class
             if self.args.hyperbolic:
                 feature_shape = input_linear.shape
                 input_linear = input_linear.view(-1, feature_shape[-1])
@@ -178,7 +186,7 @@ class Model(nn.Module):
             pred = pred_classes
             size_pred = 1
 
-        else:
+        else: # we do not use early action in this project but to show respect to original author, we refer to write here
             if self.args.early_action_self:
                 # only one step but for all hidden_all, not just the last hidden
                 pred = self.network_pred(hidden_all.view([-1] + list(hidden.shape[1:]))).view_as(hidden_all)
@@ -214,7 +222,7 @@ class Model(nn.Module):
 
             loss, *results = losses.compute_loss(self.args, feature_dist, pred, labels, self.target, sizes_pred,
                                                  self.sizes_mask, labels.shape[0])
-            return loss, results
+            return loss, results, pred
 
     def reset_mask(self):
         self.mask = None

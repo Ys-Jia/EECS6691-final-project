@@ -5,8 +5,8 @@ venv/
 dataset_info/
 videos/
 Hollywood2/
-checkpoints/
 Hollywood2-actions.tar.gz
 dataset_info.tar.gz
 checkpoints.tar.gz
 logs/
+other_finegym_dataset/

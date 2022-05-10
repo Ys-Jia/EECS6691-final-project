@@ -306,6 +306,7 @@ class FineGym(data.Dataset):
         self.action_level_gt = action_level_gt
         self.return_idx = return_idx
         self.path_data_info = path_data_info
+        self.no_clipidx=1
 
         if mode in ['train', 'val']:
             path_labels = 'gym288_train_element_v1.1.txt' if gym288 else 'gym99_train_element_v1.1.txt'
@@ -402,6 +403,8 @@ class FineGym(data.Dataset):
             subclipidx = clipidx + '_' + actions[i]
             subfolder = 'action_videos' if len(actions[i]) == 11 else 'stage_videos'
             path_clip = os.path.join(self.path_dataset, subfolder, f'{subclipidx}.mp4')
+            # print(f'\n{subfolder},no.{self.no_clipidx}subclipidx: ',subclipidx)
+            # self.no_clipidx+=1
             if os.path.isfile(path_clip):
                 video, audio, info = torchvision.io.read_video(path_clip, start_pts=0, end_pts=None, pts_unit='sec')
                 video = video.float()
@@ -610,4 +613,5 @@ def get_data(args, mode='train', return_label=False, hierarchical_label=False, a
                                   pin_memory=True,
                                   drop_last=(mode != 'test')  # test always same examples independently of batch size
                                   )
+    print(f'{mode} Dataset_len(num clips)', len(data_loader) * args.batch_size)
     return data_loader

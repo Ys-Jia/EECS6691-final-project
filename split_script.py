@@ -43,7 +43,7 @@ folder_dataset = 'dataset_info/finegym'
 # for 'segment' the 'events' have to be already extracted.
 # for 'stage' the 'segments' have to be already extracted (only with events could be enough if there is no case of
 # stages in videos with more than one segment)
-to_extract = 'event'  # ['event', 'segment', 'stage']
+to_extract = 'stage'  # ['event', 'segment', 'stage']
 
 
 def main():
@@ -55,12 +55,15 @@ def main():
         if not os.path.exists(folder_path): os.mkdir(folder_path)
 
     # To use multiprocessing pool, cancel the two lines below
-    pool = Pool(processes=50)
-    pool.map(process_video, annotations.items())
+    # pool = Pool(processes=50)
+    # pool.map(process_video, annotations.items())
 
     # To not use multiprocessing pool, cancel the two lines below
-    # for item in annotations.items():
-    #     process_video(item)
+    for item in annotations.items():
+        # 2 videos that are all set and have actions and stages
+        if item[0] in ["0LtLS9wROrk", "1Fdwuy2V9EY","1rkcLEAMTpw","1JsRXIoR3C0","2pBxfMAIaXY"]:
+            # print(item)
+            process_video(item)
 
 
 def process_video(inputs):
@@ -83,7 +86,6 @@ def process_video(inputs):
         
         # Extract video at level of "segment"
         elif to_extract == 'segment' and event_data['segments'] is not None:
-            print(1)
             for segment_id, segment_data in event_data['segments'].items():
                 name_subclip = video_id + '_' + event_id + '_' + segment_id
                 path_subclip = os.path.join(folder_dataset, 'action_videos', f'{name_subclip}.mp4')

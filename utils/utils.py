@@ -52,13 +52,13 @@ def calc_topk_accuracy(output, target, topk=(1,)):
     maxk = max(topk)
     batch_size = target.size(0)
 
-    _, pred = output.topk(maxk, 1, True, True)
+    _, pred = output.topk(maxk, 1, True, True) # https://pytorch.org/docs/stable/generated/torch.topk.html
     pred = pred.t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
 
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
+        correct_k = correct[:k].reshape(-1).float().sum(0)
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
@@ -103,6 +103,7 @@ class AverageMeter(object):
         self.save_dict = {}  # save mean and std here, for summary table
         self.avg_expanded = None
 
+    # step defines the length of memory
     def update(self, val, n=1, history=0, step=5):
         is_array = False
         if type(val) == torch.Tensor:
@@ -207,3 +208,14 @@ def print_r(args, text, print_no_verbose=False):
             print(*text)
         else:
             print(text)
+
+def avi2mp4(input_folder = 'Hollywood2/AVIClips', output_folder = 'Hollywood2/AVIClips_mp4' ): # convert .api file to .mp4 file
+    os.makedirs(output_folder, exist_ok=True)
+    N=len(os.listdir(input_folder))
+    for file in os.listdir(input_folder):
+        full_path = os.path.join(input_folder, file)
+        file_output = os.path.join(output_folder, file.replace('.avi', '.mp4'))
+        if os.path.isfile(full_path) and not (os.path.isfile(file_output)):
+            os.system(f'ffmpeg -hwaccel cuda -y -hide_banner -loglevel error -i {full_path} -c:v h264_nvenc -c:a aac {file_output}')
+            n=len(os.listdir(output_folder))
+            print(f'Converted {n} videos ', f'{N} in total', 'progress: {:.3f} %'.format(round(100*n/N, 3)), end='\r')

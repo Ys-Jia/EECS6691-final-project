@@ -154,115 +154,117 @@ def set_path(args):
     return img_path, model_path
 
 
-def main():
-    args = get_args()
+# def main():
+args = get_args()
 
-    # Get seed for torch initialization
-    seed = args.seed
-    torch.cuda.manual_seed_all(seed)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+# Get seed for torch initialization
+seed = args.seed
+torch.cuda.manual_seed_all(seed)
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 
-    # ---------------------------- Prepare model ----------------------------- #
-    # Local rank for distributed training on gpus, -1 by default
-    if args.local_rank <= 0:
-        print_r(args, 'Preparing model')
+# ---------------------------- Prepare model ----------------------------- #
+# Local rank for distributed training on gpus, -1 by default
+if args.local_rank <= 0:
+    print_r(args, 'Preparing model')
 
-    model = models.Model(args)
-    model = model.to(args.device)
+model = models.Model(args)
+# device='cuda' or 'cpu'
+model = model.to(args.device)
 
-    params = model.parameters()
-    optimizer = geoopt.optim.RiemannianAdam(params, lr=args.lr, weight_decay=args.wd, stabilize=10)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[80, 150], gamma=0.1)
+params = model.parameters()
+optimizer = geoopt.optim.RiemannianAdam(params, lr=args.lr, weight_decay=args.wd, stabilize=10) # geometric optimizer, not euclidean space
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[80, 150], gamma=0.1) # learning scheduler to adjust lr
 
-    best_acc = 0
-    iteration = 0
+best_acc = 0
+iteration = 0
 
-    # --- restart training --- #
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print_r(args, f"=> loading resumed checkpoint '{args.resume}'")
-            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
-            args.start_epoch = checkpoint['epoch']
-            iteration = checkpoint['iteration']
-            best_acc = checkpoint['best_acc']
-            model.load_state_dict(checkpoint['state_dict'], strict=True)
-            scheduler.load_state_dict(checkpoint['scheduler'])
-            if not args.reset_lr:  # if didn't reset lr, load old optimizer
-                optimizer.load_state_dict(checkpoint['optimizer'])
-            else:
-                print_r(args, f'==== Restart optimizer with a learning rate {args.lr} ====')
-            print_r(args, f"=> loaded resumed checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+# --- restart training --- #
+if args.resume:
+    if os.path.isfile(args.resume):
+        print_r(args, f"=> loading resumed checkpoint '{args.resume}'")
+        checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
+        args.start_epoch = checkpoint['epoch']
+        iteration = checkpoint['iteration']
+        best_acc = checkpoint['best_acc']
+        model.load_state_dict(checkpoint['state_dict'], strict=True)
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        if not args.reset_lr:  # if didn't reset lr, load old optimizer
+            optimizer.load_state_dict(checkpoint['optimizer'])
         else:
-            print_r(args, f"[Warning] no checkpoint found at '{args.resume}'", print_no_verbose=True)
-
-    # --- pretraining --- #
-    # Will be overwritten by resume
-    elif args.pretrain:
-        if os.path.isfile(args.pretrain):
-            print_r(args, f"=> loading pretrained checkpoint '{args.pretrain}'")
-            checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
-            model = neq_load_customized(args, model, checkpoint['state_dict'], parts='all',
-                                        size_diff=args.final_2dim or args.feature_dim != -1)
-            print_r(args, f"=> loaded pretrained checkpoint '{args.pretrain}' (epoch {checkpoint['epoch']})")
-        else:
-            print_r(args, f"=> no checkpoint found at '{args.pretrain}'", print_no_verbose=True)
-
-        if args.only_train_linear:
-            for name, param in model.named_parameters():  # deleted 'module'
-                if 'network_class' not in name:
-                    param.requires_grad = False
-        print_r(args, '\n==== parameter names and whether they require gradient ====\n')
-        for name, param in model.named_parameters():
-            print_r(args, (name, param.requires_grad))
-        print_r(args, '\n==== start dataloading ====\n')
-
-    # ---------------------------- DistributedDataParallel ----------------------------- #
-    if args.local_rank != -1:
-        from torch.nn.parallel import DistributedDataParallel as DDP
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if not args.not_track_running_stats else model
-        model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
-        args.parallel = 'ddp'
-    elif args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-        args.parallel = 'dp'
+            print_r(args, f'==== Restart optimizer with a learning rate {args.lr} ====')
+        print_r(args, f"=> loaded resumed checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
     else:
-        args.parallel = 'none'
+        print_r(args, f"[Warning] no checkpoint found at '{args.resume}'", print_no_verbose=True)
 
-    # ---------------------------- Prepare dataset ----------------------------- #
-    splits = ['train', 'val', 'test']
-    loaders = {split:
-                   datasets.get_data(args, split, return_label=args.use_labels,
-                                     hierarchical_label=args.hierarchical_labels, action_level_gt=args.action_level_gt,
-                                     num_workers=args.num_workers, path_dataset=args.path_dataset,
-                                     path_data_info=args.path_data_info)
-               for split in splits}
-
-    # ---------------------------- Set up log tool ----------------------------- #
-
-    # set up log path
-    img_path, model_path = set_path(args)
-    
-    # set up SummaryWriter
-    writer_val = SummaryWriter(
-        log_dir=os.path.join(img_path, 'val') if not args.debug else '/tmp') if args.local_rank <= 0 else None
-    writer_train = SummaryWriter(
-        log_dir=os.path.join(img_path, 'train') if not args.debug else '/tmp') if args.local_rank <= 0 else None
-    
-    # ---------------------------- Prepare trainer and run ----------------------------- #
-    
-    # TORCH.CUDA.SET_DEVICE(args.local_rank)
-    # selected device. This function is a no-op if this argument is negative.
-    if args.local_rank <= 0:
-        print_r(args, 'Preparing trainer')
-    trainer = Trainer(args, model, optimizer, loaders, iteration, best_acc, writer_train, writer_val, img_path,
-                      model_path, scheduler)
-    if args.test:
-        trainer.test()
+# --- pretraining --- #
+# Will be overwritten by resume
+elif args.pretrain:
+    if os.path.isfile(args.pretrain):
+        print_r(args, f"=> loading pretrained checkpoint '{args.pretrain}'")
+        checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
+        model = neq_load_customized(args, model, checkpoint['state_dict'], parts='all',
+                                    size_diff=args.final_2dim or args.feature_dim != -1)
+        print_r(args, f"=> loaded pretrained checkpoint '{args.pretrain}' (epoch {checkpoint['epoch']})")
     else:
-        trainer.train()
+        print_r(args, f"=> no checkpoint found at '{args.pretrain}'", print_no_verbose=True)
+
+    if args.only_train_linear:
+        for name, param in model.named_parameters():  # deleted 'module'
+            if 'network_class' not in name:
+                param.requires_grad = False
+    print_r(args, '\n==== parameter names and whether they require gradient ====\n')
+    for name, param in model.named_parameters():
+        print_r(args, (name, param.requires_grad))
+    print_r(args, '\n==== start dataloading ====\n')
+
+# ---------------------------- DistributedDataParallel ----------------------------- #
+if args.local_rank != -1:
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if not args.not_track_running_stats else model
+    model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
+    args.parallel = 'ddp'
+elif args.n_gpu > 1:
+    model = torch.nn.DataParallel(model)
+    args.parallel = 'dp'
+else:
+    args.parallel = 'none'
+print('args.parallel: ', args.parallel)
+
+# ---------------------------- Prepare dataset ----------------------------- #
+splits = ['train', 'val', 'test']
+loaders = {split:
+                datasets.get_data(args, split, return_label=args.use_labels,
+                                    hierarchical_label=args.hierarchical_labels, action_level_gt=args.action_level_gt,
+                                    num_workers=args.num_workers, path_dataset=args.path_dataset,
+                                    path_data_info=args.path_data_info)
+            for split in splits}
+
+# ---------------------------- Set up log tool ----------------------------- #
+
+# set up log path
+img_path, model_path = set_path(args)
+
+# set up SummaryWriter
+writer_val = SummaryWriter(
+    log_dir=os.path.join(img_path, 'val') if not args.debug else '/tmp') if args.local_rank <= 0 else None
+writer_train = SummaryWriter(
+    log_dir=os.path.join(img_path, 'train') if not args.debug else '/tmp') if args.local_rank <= 0 else None
+
+# ---------------------------- Prepare trainer and run ----------------------------- #
+
+# TORCH.CUDA.SET_DEVICE(args.local_rank)
+# selected device. This function is a no-op if this argument is negative.
+if args.local_rank <= 0:
+    print_r(args, 'Preparing trainer')
+trainer = Trainer(args, model, optimizer, loaders, iteration, best_acc, writer_train, writer_val, img_path,
+                    model_path, scheduler)
+if args.test:
+    trainer.test()
+else:
+    trainer.train()
 
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()

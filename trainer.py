@@ -72,7 +72,7 @@ class Trainer:
         loader = self.loaders['train' if train else ('val' if epoch is not None else 'test')]
         desc = f'Training epoch {epoch}' if train else (f'Evaluating epoch {epoch}' if epoch is not None else 'Testing')
         stop_total = int(len(loader) * (self.args.partial if train else 1.0))
-
+        # print('Loader:{}'.format('train' if train else ('val' if epoch is not None else 'test')), len(loader))
         with tqdm(loader, desc=desc, disable=self.args.local_rank > 0, total=stop_total) as t:
             for idx, (input_seq, labels, *indices) in enumerate(t):
                 if idx >= stop_total:
@@ -102,8 +102,10 @@ class Trainer:
 
                         loss, *results = losses.compute_loss(self.args, feature_dist, pred, labels, self.target,
                                                              sizes_pred, self.sizes_mask, labels.shape[0])
+                    
                     else:
-                        loss, results = output_model
+                        loss, results, pred = output_model  
+                        print('accuracy each step: ', results[0])
                     losses.bookkeeping(self.args, avg_meters, results)
 
                 del input_seq
@@ -138,9 +140,10 @@ class Trainer:
             accuracy_list = {k: v.local_avg if train else v.avg for k, v in avg_meters.items()
                              if v.count > 0 and 'time' not in k}
 
+            # Evaluation or Test
             if not train and self.args.local_rank <= 0:
-                print(f'[{epoch}/{self.args.epochs}]' +
-                      ''.join([f'{k}: {", ".join([f"{v_:.04f}" for v_ in v.avg_expanded])}, '
+                print(f'\n[{epoch}/{self.args.epochs}]' +
+                      '\n'.join([f'{k}: {", ".join([f"{v_:.04f}" for v_ in v.avg_expanded])}, '
                                for k, v in avg_meters.items() if v.count > 0]))
                 if not self.args.debug:
                     self.writers['val'].add_scalar('global/loss', accuracy_list['losses'], epoch)
